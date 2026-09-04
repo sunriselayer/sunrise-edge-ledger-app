@@ -34,9 +34,11 @@ The implemented device path:
   APDU before the application core can process or wipe it; and
 - runs a fixed public development-seed Nano S+ Speculos/Ragger suite proving
   the exact six-byte configuration, exact SLIP-0010 public key, exact 64-byte
-  signature for the 1,221-byte canonical fixture, pre-review sender-mismatch
-  rejection, and user rejection. Host conformance separately checks every one
-  of the 32 rendered facts and adversarial APDU/policy bounds.
+  signature for the 1,221-byte canonical-shape fixture after replacing its
+  original sender with that derived key, pre-review sender-mismatch rejection
+  for the byte-identical copied source fixture, explicit-reset recovery in the
+  same emulator backend, and user rejection. Host conformance separately
+  checks every one of the 32 rendered facts and adversarial APDU/policy bounds.
 
 The normative protocol and APDU contract remains Sunrise Edge `SIGNING.md` at
 source commit `1dd4d2d`. This repository changes no Sunrise Edge canonical
