@@ -29,11 +29,11 @@ curve = ["ed25519"]
 flags = "0"
 path = ["44'/21333'"]
 name = "Sunrise Edge"
-nanosplus = { icon = "icons/sunrise_14x14.gif" }
-nanox = { icon = "icons/sunrise_14x14.gif" }
-stax = { icon = "icons/sunrise_32x32.gif" }
-flex = { icon = "icons/sunrise_40x40.gif" }
-apex_p = { icon = "icons/sunrise_32x32.png" }
+nanosplus = { icon = "crates/sunrise-edge-ledger-app/icons/sunrise_14x14.gif" }
+nanox = { icon = "crates/sunrise-edge-ledger-app/icons/sunrise_14x14.gif" }
+stax = { icon = "crates/sunrise-edge-ledger-app/icons/sunrise_32x32.gif" }
+flex = { icon = "crates/sunrise-edge-ledger-app/icons/sunrise_40x40.gif" }
+apex_p = { icon = "crates/sunrise-edge-ledger-app/icons/sunrise_32x32.png" }
 
 [lints]
 workspace = true
