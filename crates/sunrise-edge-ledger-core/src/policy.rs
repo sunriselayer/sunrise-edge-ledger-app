@@ -74,8 +74,7 @@ pub struct ClearSigningPolicy {
 }
 
 impl ClearSigningPolicy {
-    /// Deterministic ASCII label for the recognized argument, for a future
-    /// UI adapter.
+    /// Deterministic ASCII label for the recognized argument and device UI.
     #[must_use]
     pub const fn args_label(&self) -> &'static str {
         self.args_label

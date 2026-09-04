@@ -3,8 +3,9 @@
 //! Cross-repository fixture and adversarial APDU conformance tests.
 
 use sunrise_edge_ledger_core::apdu::{
-    dispatch, ins, sign_p1, ApduCommand, ApduReply, DispatchOutcome, ImmediateResponse,
-    PublicKeyDeriver, SigningSession, StatusWord, MAX_CHUNK_LEN, MAX_TRANSACTION_PAYLOAD_LEN,
+    dispatch, ins, sign_p1, ApduCommand, ApduReply, DispatchOutcome, FrameSigner,
+    ImmediateResponse, PublicKeyDeriver, SigningSession, StatusWord, MAX_CHUNK_LEN,
+    MAX_TRANSACTION_PAYLOAD_LEN,
 };
 use sunrise_edge_ledger_core::canonical::{decode_canonical_frame, CanonicalError};
 use sunrise_edge_ledger_core::frame::{decode_signature_frame, FrameError};
@@ -55,6 +56,33 @@ impl PublicKeyDeriver for FailingDeriver {
     fn derive(&mut self, _path: DerivationPath) -> Option<[u8; 32]> {
         self.calls += 1;
         None
+    }
+}
+
+struct RecordingSigner {
+    result: Option<[u8; 64]>,
+    calls: usize,
+    last_path: Option<DerivationPath>,
+    last_frame: Vec<u8>,
+}
+
+impl RecordingSigner {
+    fn new(result: Option<[u8; 64]>) -> Self {
+        Self {
+            result,
+            calls: 0,
+            last_path: None,
+            last_frame: Vec::new(),
+        }
+    }
+}
+
+impl FrameSigner for RecordingSigner {
+    fn sign(&mut self, path: DerivationPath, frame: &[u8]) -> Option<[u8; 64]> {
+        self.calls += 1;
+        self.last_path = Some(path);
+        self.last_frame = frame.to_vec();
+        self.result
     }
 }
 
@@ -554,7 +582,7 @@ fn stable_source_fixture_decodes_to_the_exact_review() {
 }
 
 #[test]
-fn full_apdu_sequence_preserves_exact_frame_until_review_finishes() {
+fn full_apdu_sequence_signs_only_the_captured_path_and_exact_frame_then_wipes() {
     let bytes: Vec<u8> = fixture();
     let mut deriver: FixedDeriver = FixedDeriver::new([1_u8; 32]);
     let (mut session, outcome): (SigningSession, DispatchOutcome) =
@@ -567,10 +595,78 @@ fn full_apdu_sequence_preserves_exact_frame_until_review_finishes() {
     assert_eq!(session.path().expect("pending path").account(), 7);
     assert_eq!(deriver.last_path.expect("deriver was called").account(), 7);
 
-    session.finish_review();
+    let expected_signature: [u8; 64] = [0xA5; 64];
+    let mut signer: RecordingSigner = RecordingSigner::new(Some(expected_signature));
+    let signature = session
+        .approve_and_sign(&mut signer)
+        .expect("device signer succeeds");
+    assert_eq!(signature, expected_signature);
+    assert_eq!(signer.calls, 1);
+    assert_eq!(signer.last_path.expect("signer received path").account(), 7);
+    assert_eq!(signer.last_frame, bytes);
     assert!(session.is_idle());
     assert_eq!(session.pending_frame(), None);
     assert_eq!(session.path(), None);
+}
+
+#[test]
+fn transaction_review_rejection_and_signer_failure_always_wipe() {
+    let bytes: Vec<u8> = fixture();
+    let mut deriver: FixedDeriver = FixedDeriver::new([1_u8; 32]);
+    let (mut rejected, outcome): (SigningSession, DispatchOutcome) =
+        dispatch_complete_frame(&bytes, &mut deriver);
+    assert!(matches!(outcome, DispatchOutcome::ReviewTransaction(_)));
+    rejected.reject_review();
+    assert!(rejected.is_idle());
+    assert_eq!(rejected.pending_frame(), None);
+    assert_eq!(rejected.path(), None);
+
+    let (mut failed, outcome): (SigningSession, DispatchOutcome) =
+        dispatch_complete_frame(&bytes, &mut deriver);
+    assert!(matches!(outcome, DispatchOutcome::ReviewTransaction(_)));
+    let mut signer: RecordingSigner = RecordingSigner::new(None);
+    assert_eq!(
+        failed.approve_and_sign(&mut signer),
+        Err(StatusWord::InternalFailure)
+    );
+    assert_eq!(signer.calls, 1);
+    assert_eq!(signer.last_frame, bytes);
+    assert!(failed.is_idle());
+    assert_eq!(failed.pending_frame(), None);
+    assert_eq!(failed.path(), None);
+}
+
+#[test]
+fn approval_outside_review_fails_without_calling_signer_and_wipes_partial_state() {
+    let mut idle: SigningSession = SigningSession::new();
+    let mut signer: RecordingSigner = RecordingSigner::new(Some([0x5A; 64]));
+    assert_eq!(
+        idle.approve_and_sign(&mut signer),
+        Err(StatusWord::InvalidState)
+    );
+    assert_eq!(signer.calls, 0);
+
+    let frame: Vec<u8> = fixture();
+    let mut collecting: SigningSession = SigningSession::new();
+    let mut deriver: FixedDeriver = FixedDeriver::new([1_u8; 32]);
+    let first: Vec<u8> = begin_data(frame.len(), &frame[..MAX_CHUNK_LEN]);
+    assert_eq!(
+        reply_status(&dispatch(
+            &mut collecting,
+            command(ins::SIGN_TRANSACTION, sign_p1::FIRST, &first),
+            &mut deriver,
+            &DEVNET_ASSET_TRANSFER_POLICY,
+        )),
+        StatusWord::Success
+    );
+    assert_eq!(
+        collecting.approve_and_sign(&mut signer),
+        Err(StatusWord::InvalidState)
+    );
+    assert_eq!(signer.calls, 0);
+    assert!(collecting.is_idle());
+    assert_eq!(collecting.pending_frame(), None);
+    assert_eq!(collecting.path(), None);
 }
 
 #[test]
@@ -1342,4 +1438,57 @@ fn stray_apdu_while_awaiting_approval_fails_closed_and_wipes() {
     assert!(session.is_idle());
     assert_eq!(session.pending_frame(), None);
     assert_eq!(session.path(), None);
+}
+
+#[test]
+fn non_signing_command_while_collecting_fails_closed_and_wipes() {
+    let frame: Vec<u8> = fixture();
+    for interleaved_ins in [ins::GET_CONFIGURATION, ins::VERIFY_PUBLIC_KEY] {
+        let mut session: SigningSession = SigningSession::new();
+        let mut deriver: FixedDeriver = FixedDeriver::new([1_u8; 32]);
+        let first: Vec<u8> = begin_data(frame.len(), &frame[..MAX_CHUNK_LEN]);
+        assert_eq!(
+            reply_status(&dispatch(
+                &mut session,
+                command(ins::SIGN_TRANSACTION, sign_p1::FIRST, &first),
+                &mut deriver,
+                &DEVNET_ASSET_TRANSFER_POLICY,
+            )),
+            StatusWord::Success
+        );
+
+        let data: [u8; PATH_ENCODED_LEN] = provisional_path(7);
+        let command_data: &[u8] = if interleaved_ins == ins::VERIFY_PUBLIC_KEY {
+            &data
+        } else {
+            &[]
+        };
+        let outcome: DispatchOutcome = dispatch(
+            &mut session,
+            command(interleaved_ins, 0, command_data),
+            &mut deriver,
+            &DEVNET_ASSET_TRANSFER_POLICY,
+        );
+        assert_eq!(reply_status(&outcome), StatusWord::InvalidState);
+        assert!(session.is_idle());
+        assert_eq!(session.pending_frame(), None);
+        assert_eq!(session.path(), None);
+    }
+}
+
+#[test]
+fn bip32_components_match_exact_slip0010_hardened_path() {
+    let path: [u8; PATH_ENCODED_LEN] = provisional_path(42);
+    let decoded = decode_path(&path).expect("valid provisional path");
+    assert_eq!(decoded.account(), 42);
+    assert_eq!(
+        decoded.to_bip32_components(),
+        [
+            0x8000_0000 + 44,
+            0x8000_0000 + 21_333,
+            0x8000_0000 + 42,
+            0x8000_0000,
+            0x8000_0000,
+        ]
+    );
 }

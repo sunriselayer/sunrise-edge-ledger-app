@@ -1,0 +1,39 @@
+[package]
+name = "sunrise-edge-ledger-app"
+description = "Dedicated Ledger device application for Sunrise Edge (Hardware Signing Profile v1)."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+name = "sunrise_edge_ledger_app"
+path = "src/lib.rs"
+
+[[bin]]
+name = "sunrise-edge-ledger-app"
+path = "src/main.rs"
+
+[dependencies]
+sunrise-edge-ledger-core = { path = "../sunrise-edge-ledger-core" }
+
+[target.'cfg(any(target_os = "nanosplus", target_os = "nanox", target_os = "stax", target_os = "flex", target_os = "apex_p"))'.dependencies]
+arrayvec = { version = "=0.7.6", default-features = false }
+ledger_device_sdk = { version = "=1.37.0", features = ["io_new", "nano_nbgl"] }
+
+[dev-dependencies]
+hex = { version = "=0.4.3", default-features = false }
+
+[package.metadata.ledger]
+curve = ["ed25519"]
+flags = "0"
+path = ["44'/21333'"]
+name = "Sunrise Edge"
+nanosplus = { icon = "icons/sunrise_14x14.gif" }
+nanox = { icon = "icons/sunrise_14x14.gif" }
+stax = { icon = "icons/sunrise_32x32.gif" }
+flex = { icon = "icons/sunrise_40x40.gif" }
+apex_p = { icon = "icons/sunrise_32x32.png" }
+
+[lints]
+workspace = true
