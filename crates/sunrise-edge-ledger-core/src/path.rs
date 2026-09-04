@@ -3,9 +3,8 @@
 //! component hardened, encoded on the wire as one depth byte followed by
 //! that many big-endian `u32` hardened components.
 //!
-//! This module only validates path *shape*; it never derives a key. Actual
-//! SLIP-0010 Ed25519 derivation is a future device-SDK integration
-//! explicitly out of scope for this slice (see `README.md`).
+//! This module only validates path *shape*; it never derives a key. The sibling
+//! device crate performs SLIP-0010 Ed25519 derivation after this validation.
 
 /// Number of path components Profile v1 requires.
 pub const PATH_DEPTH: u8 = 5;
@@ -59,6 +58,19 @@ impl DerivationPath {
     #[must_use]
     pub const fn account(self) -> u32 {
         self.account
+    }
+
+    /// Returns the five hardened BIP-32/SLIP-0010 path components
+    /// `[44', 21333', account', 0', 0']`.
+    #[must_use]
+    pub const fn to_bip32_components(self) -> [u32; 5] {
+        [
+            PURPOSE | HARDENED_BIT,
+            COIN_TYPE | HARDENED_BIT,
+            self.account | HARDENED_BIT,
+            HARDENED_BIT,
+            HARDENED_BIT,
+        ]
     }
 }
 

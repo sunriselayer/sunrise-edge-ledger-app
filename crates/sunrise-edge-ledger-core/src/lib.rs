@@ -1,11 +1,10 @@
 //! Pure, `no_std`, allocation-free Hardware Signing Profile v1 core logic
 //! for the Sunrise Edge Ledger application.
 //!
-//! This crate is **host-validated core logic only**. It contains no Ledger
-//! device application, no APDU/USB/HID transport, no key derivation or
-//! signing, and no on-device UI — see `README.md` for the exact boundary
-//! and remaining gaps before any of that exists. Everything here is a pure
-//! function over borrowed byte slices and fixed-size, `Copy` value types:
+//! This crate is the SDK-independent core used by the sibling Ledger device
+//! crate. It contains no Ledger dependency, APDU transport, key derivation,
+//! signing primitive, or display driver. Everything here is a pure function
+//! over borrowed byte slices and fixed-size, `Copy` value types:
 //!
 //! * [`apdu`] — the exact application-owned APDU state machine and status
 //!   words from `SIGNING.md`, "Future APDU contract", as transport-free
@@ -20,7 +19,7 @@
 //!   `TransactionSignable`, plus every nested frame it carries.
 //! * [`policy`] — the exact-match clear-signing policy for the one
 //!   allowlisted devnet asset-transfer shape.
-//! * [`review`] — a bounded, signed-fields-only review model for a future
+//! * [`review`] — the bounded, signed-fields-only model consumed by the
 //!   on-device UI adapter.
 //! * [`types`] — fixed-capacity containers and protocol identifiers shared
 //!   by the modules above.

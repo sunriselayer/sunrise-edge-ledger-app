@@ -9,12 +9,12 @@
 //! symbol, no request id, and no blind-signing/raw-argument fallback path:
 //! [`crate::apdu::dispatch`] emits a [`ClearSigningReview`] only through
 //! [`build_review`] after full frame decode and exact policy recognition
-//! succeed. The fields remain public for a future UI adapter; that adapter
+//! succeed. The fields remain public for the sibling device UI adapter, which
 //! must trust only the value carried by `DispatchOutcome::ReviewTransaction`,
 //! never construct one from host-supplied display metadata.
 //!
 //! This module renders no pixels and owns no display driver; it is the
-//! bounded data a future device-side UI adapter would page through.
+//! bounded data the device-side UI adapter pages through.
 
 use crate::frame::{SignatureFrame, MAX_CHAIN_ID_BYTES, MAX_MESSAGE_TYPE_BYTES};
 use crate::policy::{ClearSigningPolicy, PolicyError};

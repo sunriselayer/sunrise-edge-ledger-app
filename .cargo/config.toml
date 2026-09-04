@@ -1,0 +1,7 @@
+[profile.release]
+opt-level = 'z'
+lto = true
+
+[unstable]
+build-std = ["core", "alloc"]
+build-std-features = ["compiler-builtins-mem"]

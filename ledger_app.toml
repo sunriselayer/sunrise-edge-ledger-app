@@ -1,0 +1,4 @@
+[app]
+build_directory = "crates/sunrise-edge-ledger-app"
+sdk = "Rust"
+devices = ["nanox", "nanos+", "stax", "flex", "apex_p"]

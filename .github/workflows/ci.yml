@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  host-check:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -23,3 +23,38 @@ jobs:
 
       - name: Run repository validation
         run: ./scripts/check.sh
+
+  device-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build every Ledger target in the pinned builder
+        run: ./scripts/build_device.sh all
+
+      - name: Upload device artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ledger-device-artifacts
+          path: |
+            target/nanosplus/release/sunrise-edge-ledger-app*
+            target/nanox/release/sunrise-edge-ledger-app*
+            target/stax/release/sunrise-edge-ledger-app*
+            target/flex/release/sunrise-edge-ledger-app*
+            target/apex_p/release/sunrise-edge-ledger-app*
+          if-no-files-found: error
+
+  speculos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Build Nano S+ device application
+        run: ./scripts/build_device.sh nanosplus
+
+      - name: Run fixed-seed Speculos and Ragger vectors
+        run: ./scripts/check_speculos.sh

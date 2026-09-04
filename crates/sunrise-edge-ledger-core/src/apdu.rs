@@ -4,11 +4,10 @@
 //! This module never touches USB/HID/Speculos: [`dispatch`] is a plain
 //! function from `(session state, one APDU command, a caller-supplied key
 //! deriver)` to either an immediate reply or a pending user-review request.
-//! Two things are deliberately *not* implemented here, matching this
-//! slice's scope (see `README.md`):
+//! Two things are deliberately injected by the sibling device adapter:
 //!
 //! * **Key derivation.** SLIP-0010 Ed25519 derivation from a
-//!   [`crate::path::DerivationPath`] requires a real device SDK and is not
+//!   [`crate::path::DerivationPath`] requires the device SDK and is not
 //!   implemented in this pure-logic crate. Every entry point that needs a
 //!   derived public key (`verify public key`, and `sign transaction`'s
 //!   `LAST` chunk) instead takes a [`PublicKeyDeriver`] callback. Crucially,
@@ -16,7 +15,7 @@
 //!   [`dispatch`] always calls the deriver with the exact path it just
 //!   decoded from `verify public key`'s command data, or with the exact path
 //!   captured on `FIRST` for `sign transaction`'s `LAST` chunk. This makes
-//!   the future device adapter's derivation obligation explicit and prevents
+//!   the device adapter's derivation obligation explicit and prevents
 //!   the dispatch caller from independently choosing a path and a key.
 //! * **Signing.** `LAST`'s real success response is a 64-byte Ed25519
 //!   signature over the buffered frame. This crate does not sign: once
@@ -24,7 +23,8 @@
 //!   duplicate-`ObjectId` rejection, and a sender/public-key match), it
 //!   returns [`DispatchOutcome::ReviewTransaction`] — a validated review
 //!   value — rather than fabricating signature bytes. Producing the real signature
-//!   (after on-device user approval) is future device-SDK integration work.
+//!   (after on-device user approval) is performed by the device adapter via
+//!   [`SigningSession::approve_and_sign`].
 
 use crate::frame::decode_signature_frame;
 use crate::path::{decode_path, DerivationPath, PATH_ENCODED_LEN};
@@ -35,15 +35,36 @@ use crate::transaction::decode_transaction_signable;
 /// Derives the 32-byte RFC 8032 compressed Ed25519 public key for a
 /// validated [`DerivationPath`].
 ///
-/// This crate never derives keys itself (see the module documentation): a
-/// future device adapter supplies an implementation backed by the real
+/// This crate never derives keys itself (see the module documentation): the
+/// device adapter supplies an implementation backed by real
 /// SLIP-0010 derivation. [`dispatch`] always calls this with a path it has
 /// itself validated and captured — never with a caller-selected replacement
-/// path. The future device adapter is the trusted implementation boundary: it
+/// path. The device adapter is the trusted implementation boundary: it
 /// must derive from its `path` argument and return `None` on device failure.
 pub trait PublicKeyDeriver {
     /// Derives the public key for `path`, or `None` on derivation failure.
     fn derive(&mut self, path: DerivationPath) -> Option<[u8; 32]>;
+}
+
+/// Signs the exact buffered signature frame with the exact derivation path
+/// captured from the `FIRST` command.
+///
+/// [`SigningSession::approve_and_sign`] owns selection of both inputs. A
+/// device adapter therefore cannot accidentally sign host-supplied bytes or a
+/// path different from the one whose public key was checked before review.
+pub trait FrameSigner {
+    /// Returns an exact 64-byte Ed25519 signature, or `None` on device
+    /// failure.
+    fn sign(&mut self, path: DerivationPath, frame: &[u8]) -> Option<[u8; 64]>;
+}
+
+impl<F> FrameSigner for F
+where
+    F: FnMut(DerivationPath, &[u8]) -> Option<[u8; 64]>,
+{
+    fn sign(&mut self, path: DerivationPath, frame: &[u8]) -> Option<[u8; 64]> {
+        self(path, frame)
+    }
 }
 
 impl<F> PublicKeyDeriver for F
@@ -144,8 +165,7 @@ impl StatusWord {
     }
 }
 
-/// One inbound APDU, already framed by the (not yet implemented) transport
-/// layer.
+/// One inbound APDU, already framed by the device SDK transport layer.
 ///
 /// `cla`/`ins`/`p1`/`p2`/`data` mirror the standard APDU header fields;
 /// this module assumes `Lc`/length framing has already happened (see
@@ -203,7 +223,7 @@ impl ApduReply {
 }
 
 /// Pure dispatch result. Review variants are deliberately not represented as
-/// `9000`: the future device adapter must first obtain user approval and, for a
+/// `9000`: the device adapter must first obtain user approval and, for a
 /// transaction, produce the exact signature response.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DispatchOutcome {
@@ -219,18 +239,19 @@ pub enum DispatchOutcome {
         public_key: [u8; 32],
     },
     /// A fully validated transaction review. The session retains the exact
-    /// frame and path until the adapter calls [`SigningSession::finish_review`].
+    /// frame and path until the adapter calls
+    /// [`SigningSession::approve_and_sign`] or
+    /// [`SigningSession::reject_review`].
     ReviewTransaction(ClearSigningReview),
 }
 
 /// Internal signing-session state. `AwaitingApproval` is an adapter handoff,
-/// not a third host-visible APDU chunk state: the device UI blocks APDU
-/// dispatch while it is active, so no APDU is expected to reach [`dispatch`]
-/// in this state. If the host sends one anyway (a misbehaving or confused
-/// host, not a state this profile's normal flow produces), [`dispatch`]
-/// fails closed: every INS except `reset signing` is rejected and wipes,
-/// deliberately stricter than treating the stray command as ignorable or
-/// queued.
+/// not a third host-visible APDU chunk state: the Ledger SDK rejects a second
+/// APDU with its SDK-owned `0x6901` while the synchronous review UI is active,
+/// before it can reach [`dispatch`]. At the reusable core boundary, any known
+/// non-reset command received while approval is pending fails closed with
+/// [`StatusWord::InvalidState`]; an unknown INS retains its stable
+/// [`StatusWord::UnsupportedIns`] response. Both paths wipe the session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum SessionState {
     Idle,
@@ -291,10 +312,37 @@ impl SigningSession {
         self.buffer.get(..self.buffered_len)
     }
 
-    /// Completes an approval or rejection path and wipes all buffered signing
-    /// material. The future adapter must call this after it has signed or the
-    /// user has rejected the review.
-    pub fn finish_review(&mut self) {
+    /// Signs the exact pending frame with the captured path and then wipes all
+    /// buffered signing material before returning, whether signing succeeds
+    /// or fails.
+    ///
+    /// The signer never receives caller-selected bytes or a caller-selected
+    /// path. Calling this outside the awaiting-approval state fails closed and
+    /// also wipes any partial state.
+    pub fn approve_and_sign(
+        &mut self,
+        signer: &mut impl FrameSigner,
+    ) -> Result<[u8; 64], StatusWord> {
+        if self.state != SessionState::AwaitingApproval {
+            self.wipe();
+            return Err(StatusWord::InvalidState);
+        }
+        let Some(path) = self.path else {
+            self.wipe();
+            return Err(StatusWord::InternalFailure);
+        };
+        let Some(frame) = self.buffer.get(..self.buffered_len) else {
+            self.wipe();
+            return Err(StatusWord::InternalFailure);
+        };
+        let signature = signer.sign(path, frame);
+        self.wipe();
+        signature.ok_or(StatusWord::InternalFailure)
+    }
+
+    /// Rejects a pending review and wipes all buffered signing material.
+    /// Calling it in another state is still a safe, idempotent wipe.
+    pub fn reject_review(&mut self) {
         self.wipe();
     }
 
@@ -636,10 +684,16 @@ pub fn dispatch(
         session.wipe();
         return DispatchOutcome::Reply(ApduReply::failure(StatusWord::UnsupportedCla));
     }
-    if session.state == SessionState::AwaitingApproval && command.ins != ins::RESET_SIGNING {
+    let known_command_conflicts_with_session: bool = match command.ins {
+        ins::GET_CONFIGURATION | ins::VERIFY_PUBLIC_KEY => !session.is_idle(),
+        ins::SIGN_TRANSACTION => session.state == SessionState::AwaitingApproval,
+        _ => false,
+    };
+    if known_command_conflicts_with_session {
         session.wipe();
         return DispatchOutcome::Reply(ApduReply::failure(StatusWord::InvalidState));
     }
+
     let outcome = match command.ins {
         ins::GET_CONFIGURATION => handle_get_configuration(command.p1, command.p2, command.data),
         ins::VERIFY_PUBLIC_KEY => {
