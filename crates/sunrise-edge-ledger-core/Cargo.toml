@@ -1,0 +1,19 @@
+[package]
+name = "sunrise-edge-ledger-core"
+description = "Pure, no_std, allocation-free Hardware Signing Profile v1 core logic for the Sunrise Edge Ledger app (host-validated only; see README.md)."
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+publish = false
+
+[lib]
+name = "sunrise_edge_ledger_core"
+path = "src/lib.rs"
+
+[dependencies]
+
+[dev-dependencies]
+hex = "=0.4.3"
+
+[lints]
+workspace = true
